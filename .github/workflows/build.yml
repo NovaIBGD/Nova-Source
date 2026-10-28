@@ -1,6 +1,6 @@
 # The build for NovaIBGD/Nova-Source - the PUBLIC repo, which only holds the
 # releases (players download / auto-update from it) and this workflow.
-# The code lives in the PRIVATE repo bockatta/GD-Input-Buffer; this workflow
+# The code lives in the PRIVATE repo bockatta/Nova-Code; this workflow
 # fetches it with a read-only deploy key (secret SOURCE_SSH_KEY), builds
 # Windows, macOS, Android 32 / 64 and iOS on GitHub's (free, public-repo)
 # servers, combines them into one .geode and releases it once per version.
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "GD-Input-Buffer (code) branch / commit to build"
+        description: "Nova-Code (code) branch / commit to build"
         default: main
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
       - name: Source (private)
         uses: actions/checkout@v4
         with:
-          repository: bockatta/GD-Input-Buffer
+          repository: bockatta/Nova-Code
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
 
@@ -118,7 +118,7 @@ jobs:
       - name: Source (private)
         uses: actions/checkout@v4
         with:
-          repository: bockatta/GD-Input-Buffer
+          repository: bockatta/Nova-Code
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
 
