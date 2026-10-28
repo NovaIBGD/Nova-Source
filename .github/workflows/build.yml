@@ -1,0 +1,194 @@
+# The build for bockatta/Nova-Source - the PUBLIC repo, which only holds the
+# README, changelog and releases (players download / auto-update from it).
+# The code lives in the PRIVATE repo bockatta/GD-Input-Buffer; this workflow
+# fetches it with a read-only deploy key (secret SOURCE_SSH_KEY), builds
+# Windows, macOS, Android 32 / 64 and iOS on GitHub's (free, public-repo)
+# servers, combines them into one .geode, releases it once per version, and
+# copies README.md / changelog.md / about.md / logo.png over to this repo.
+# push.bat starts it after every push (gh workflow run).
+# (Kept in the source repo as ci/public-build.yml; in the public repo it is
+# .github/workflows/build.yml.)
+name: Build Geode Mod
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "GD-Input-Buffer (code) branch / commit to build"
+        default: main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-latest
+          - name: Android32
+            os: ubuntu-latest
+            target: Android32
+          - name: Android64
+            os: ubuntu-latest
+            target: Android64
+          - name: iOS
+            os: macos-latest
+            target: iOS
+
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+
+    steps:
+      - name: Source (private)
+        uses: actions/checkout@v4
+        with:
+          repository: bockatta/GD-Input-Buffer
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+
+      # iOS: Geode's newest bindings forget to include fmod.hpp in the generated
+      # FMOD::Sound source on iOS ("incomplete type 'FMOD::Sound'"). Use a copy of
+      # the bindings with that include added. Not our code - remove this step
+      # once Geode fixes it upstream.
+      - name: Patch Geode bindings (iOS)
+        if: matrix.config.target == 'iOS'
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/geode-sdk/bindings "$RUNNER_TEMP/bindings-repo"
+          f="$RUNNER_TEMP/bindings-repo/bindings/2.2081/FMOD.bro"
+          { echo '#import ios <fmod.hpp>'; cat "$f"; } > "$f.new" && mv "$f.new" "$f"
+          echo "GEODE_BINDINGS_REPO_PATH=$RUNNER_TEMP/bindings-repo" >> "$GITHUB_ENV"
+
+      # src/OnlineURL.hpp is private: made from the NOVA_ONLINE_URL secret.
+      - name: Online counter URL (private)
+        shell: bash
+        env:
+          NOVA_ONLINE_URL: ${{ secrets.NOVA_ONLINE_URL }}
+        run: |
+          if [ ! -f src/OnlineURL.hpp ]; then
+            printf '#pragma once\nconstexpr char const* ONLINE_URL = "%s";\n' "$NOVA_ONLINE_URL" > src/OnlineURL.hpp
+          fi
+
+      # src/NovaUI.hpp and src/NovaCourse.hpp: push.bat stores them, gzipped +
+      # base64, in the NOVA_UI_GZ / NOVA_COURSE_GZ secrets on every push.
+      - name: Private sources
+        shell: bash
+        env:
+          NOVA_UI_GZ: ${{ secrets.NOVA_UI_GZ }}
+          NOVA_COURSE_GZ: ${{ secrets.NOVA_COURSE_GZ }}
+        run: |
+          for pair in "NovaUI.hpp:NOVA_UI_GZ" "NovaCourse.hpp:NOVA_COURSE_GZ"; do
+            f="src/${pair%%:*}"; v="${pair#*:}"
+            [ -f "$f" ] && continue
+            if [ -z "${!v}" ]; then echo "::error title=Missing secret::$v is not set - run push.bat"; exit 1; fi
+            printf '%s' "${!v}" | tr -d '[:space:]' | base64 -d | gunzip > "$f"
+          done
+
+      - name: Build the mod
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          combine: true
+          target: ${{ matrix.config.target }}
+
+      # The error lines only (file:line: error: ...) - this repo's logs are
+      # public, so no code around them
+      - name: Show build errors
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f build/build.ninja ]; then
+            cmake --build build -- -k 0 > errlog.txt 2>&1 || true
+            grep -E ": (fatal )?error:|undefined reference|ld: |FAILED:" errlog.txt | head -n 60 > errs.txt || true
+          else
+            echo "CMake configure failed" > errs.txt
+          fi
+          msg=$(sed -e 's/%/%25/g' -e 's/\r/%0D/g' errs.txt | awk '{printf "%s%%0A", $0}')
+          echo "::error title=${{ matrix.config.name }} build errors::$msg"
+          exit 1
+
+  package:
+    name: Package builds
+    runs-on: ubuntu-latest
+    needs: ['build']
+    permissions:
+      contents: write   # the release, and the README / changelog copy
+
+    steps:
+      - name: Source (private)
+        uses: actions/checkout@v4
+        with:
+          repository: bockatta/GD-Input-Buffer
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+
+      - uses: geode-sdk/build-geode-mod/combine@main
+        id: build
+
+      - name: Check the package has every platform
+        continue-on-error: true
+        shell: bash
+        run: |
+          p="${{ steps.build.outputs.build-output }}"
+          if [ -d "$p" ]; then f=$(ls "$p"/*.geode 2>/dev/null | head -n 1); else f="$p"; fi
+          for bin in alquerez.nova.dll alquerez.nova.dylib alquerez.nova.ios.dylib alquerez.nova.android32.so alquerez.nova.android64.so; do
+            unzip -l "$f" | grep -qF " $bin" || echo "::warning title=Missing binary::$bin is not in the package"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build Output
+          path: ${{ steps.build.outputs.build-output }}
+
+      # README.md / changelog.md / about.md / logo.png -> this repo (only what changed)
+      - name: Copy the README and changelog here
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in README.md changelog.md about.md logo.png; do
+            [ -f "$f" ] || continue
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/contents/$f" --jq .sha 2>/dev/null || true)
+            here=$(git hash-object "$f")
+            [ "$sha" = "$here" ] && continue
+            base64 -w0 "$f" > body.b64
+            args=(-X PUT "repos/$GITHUB_REPOSITORY/contents/$f" -f "message=$f from the code repo" -F "content=@body.b64")
+            [ -n "$sha" ] && args+=(-f "sha=$sha")
+            gh api "${args[@]}" > /dev/null && echo "updated $f"
+          done
+
+      # One release per version: the tag is mod.json's "version". Already
+      # released -> skipped. The notes are that version's What's New lines and
+      # Bug fixes (changelog.md).
+      - name: Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(python3 -c "import json; print(json.load(open('mod.json'))['version'])")
+          if gh release view "$ver" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$ver is already released - bump the version in mod.json to release again"
+            exit 0
+          fi
+          p="${{ steps.build.outputs.build-output }}"
+          if [ -d "$p" ]; then f=$(ls "$p"/*.geode | head -n 1); else f="$p"; fi
+          cp "$f" alquerez.nova.geode
+          python3 - "$ver" > notes.md <<'PY'
+          import sys
+          ver = sys.argv[1]
+          out, part, inside = [], "news", False
+          for line in open("changelog.md", encoding="utf-8").read().splitlines():
+              if line.startswith("## "):
+                  if inside: break
+                  inside = line[3:].strip() == ver
+                  continue
+              if not inside: continue
+              if line.startswith("### "):
+                  part = "fixes" if line[4:].strip() == "Bug fixes" else "skip"
+                  if part == "fixes": out += ["", "**Bug fixes**"]
+                  continue
+              if part != "skip" and line.startswith("- "): out.append(line)
+          print("\n".join(out).strip() or ("Nova " + ver))
+          PY
+          gh release create "$ver" alquerez.nova.geode -R "$GITHUB_REPOSITORY" --title "Nova $ver" --notes-file notes.md
