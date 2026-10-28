@@ -1,4 +1,4 @@
-# The build for bockatta/Nova-Source - the PUBLIC repo, which only holds the
+# The build for NovaIBGD/Nova-Source - the PUBLIC repo, which only holds the
 # releases (players download / auto-update from it) and this workflow.
 # The code lives in the PRIVATE repo bockatta/GD-Input-Buffer; this workflow
 # fetches it with a read-only deploy key (secret SOURCE_SSH_KEY), builds
