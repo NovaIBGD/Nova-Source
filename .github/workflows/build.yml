@@ -1,10 +1,9 @@
 # The build for bockatta/Nova-Source - the PUBLIC repo, which only holds the
-# README, changelog and releases (players download / auto-update from it).
+# releases (players download / auto-update from it) and this workflow.
 # The code lives in the PRIVATE repo bockatta/GD-Input-Buffer; this workflow
 # fetches it with a read-only deploy key (secret SOURCE_SSH_KEY), builds
 # Windows, macOS, Android 32 / 64 and iOS on GitHub's (free, public-repo)
-# servers, combines them into one .geode, releases it once per version, and
-# copies README.md / changelog.md / about.md / logo.png over to this repo.
+# servers, combines them into one .geode and releases it once per version.
 # push.bat starts it after every push (gh workflow run).
 # (Kept in the source repo as ci/public-build.yml; in the public repo it is
 # .github/workflows/build.yml.)
@@ -113,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ['build']
     permissions:
-      contents: write   # the release, and the README / changelog copy
+      contents: write   # the release
 
     steps:
       - name: Source (private)
@@ -141,26 +140,8 @@ jobs:
           name: Build Output
           path: ${{ steps.build.outputs.build-output }}
 
-      # README.md / changelog.md / about.md / logo.png -> this repo (only what changed)
-      - name: Copy the README and changelog here
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for f in README.md changelog.md about.md logo.png; do
-            [ -f "$f" ] || continue
-            sha=$(gh api "repos/$GITHUB_REPOSITORY/contents/$f" --jq .sha 2>/dev/null || true)
-            here=$(git hash-object "$f")
-            [ "$sha" = "$here" ] && continue
-            base64 -w0 "$f" > body.b64
-            args=(-X PUT "repos/$GITHUB_REPOSITORY/contents/$f" -f "message=$f from the code repo" -F "content=@body.b64")
-            [ -n "$sha" ] && args+=(-f "sha=$sha")
-            gh api "${args[@]}" > /dev/null && echo "updated $f"
-          done
-
       # One release per version: the tag is mod.json's "version". Already
-      # released -> skipped. The notes are that version's What's New lines and
-      # Bug fixes (changelog.md).
+      # released -> skipped. No notes (the repo stays bare).
       - name: Release
         shell: bash
         env:
@@ -174,21 +155,4 @@ jobs:
           p="${{ steps.build.outputs.build-output }}"
           if [ -d "$p" ]; then f=$(ls "$p"/*.geode | head -n 1); else f="$p"; fi
           cp "$f" alquerez.nova.geode
-          python3 - "$ver" > notes.md <<'PY'
-          import sys
-          ver = sys.argv[1]
-          out, part, inside = [], "news", False
-          for line in open("changelog.md", encoding="utf-8").read().splitlines():
-              if line.startswith("## "):
-                  if inside: break
-                  inside = line[3:].strip() == ver
-                  continue
-              if not inside: continue
-              if line.startswith("### "):
-                  part = "fixes" if line[4:].strip() == "Bug fixes" else "skip"
-                  if part == "fixes": out += ["", "**Bug fixes**"]
-                  continue
-              if part != "skip" and line.startswith("- "): out.append(line)
-          print("\n".join(out).strip() or ("Nova " + ver))
-          PY
-          gh release create "$ver" alquerez.nova.geode -R "$GITHUB_REPOSITORY" --title "Nova $ver" --notes-file notes.md
+          gh release create "$ver" alquerez.nova.geode -R "$GITHUB_REPOSITORY" --title "Nova $ver" --notes "Nova $ver"
