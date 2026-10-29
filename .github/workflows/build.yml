@@ -71,18 +71,36 @@ jobs:
           fi
 
       # src/NovaUI.hpp and src/NovaCourse.hpp: push.bat stores them, gzipped +
-      # base64, in the NOVA_UI_GZ / NOVA_COURSE_GZ secrets on every push.
+      # base64, in up to 4 secrets each (NOVA_UI_GZ_1..4, NOVA_COURSE_GZ_1..4;
+      # "-" = an unused part) on every push - one secret holds 48 KB at most.
+      # The old single NOVA_UI_GZ / NOVA_COURSE_GZ is used if no parts are set.
       - name: Private sources
         shell: bash
         env:
           NOVA_UI_GZ: ${{ secrets.NOVA_UI_GZ }}
+          NOVA_UI_GZ_1: ${{ secrets.NOVA_UI_GZ_1 }}
+          NOVA_UI_GZ_2: ${{ secrets.NOVA_UI_GZ_2 }}
+          NOVA_UI_GZ_3: ${{ secrets.NOVA_UI_GZ_3 }}
+          NOVA_UI_GZ_4: ${{ secrets.NOVA_UI_GZ_4 }}
           NOVA_COURSE_GZ: ${{ secrets.NOVA_COURSE_GZ }}
+          NOVA_COURSE_GZ_1: ${{ secrets.NOVA_COURSE_GZ_1 }}
+          NOVA_COURSE_GZ_2: ${{ secrets.NOVA_COURSE_GZ_2 }}
+          NOVA_COURSE_GZ_3: ${{ secrets.NOVA_COURSE_GZ_3 }}
+          NOVA_COURSE_GZ_4: ${{ secrets.NOVA_COURSE_GZ_4 }}
         run: |
           for pair in "NovaUI.hpp:NOVA_UI_GZ" "NovaCourse.hpp:NOVA_COURSE_GZ"; do
             f="src/${pair%%:*}"; v="${pair#*:}"
             [ -f "$f" ] && continue
-            if [ -z "${!v}" ]; then echo "::error title=Missing secret::$v is not set - run push.bat"; exit 1; fi
-            printf '%s' "${!v}" | tr -d '[:space:]' | base64 -d | gunzip > "$f"
+            data=""
+            for i in 1 2 3 4; do
+              p="${v}_$i"
+              part="$(printf '%s' "${!p}" | tr -d '[:space:]')"
+              [ "$part" = "-" ] && part=""
+              data="$data$part"
+            done
+            [ -z "$data" ] && data="$(printf '%s' "${!v}" | tr -d '[:space:]')"
+            if [ -z "$data" ]; then echo "::error title=Missing secret::${v}_1 is not set - run push.bat"; exit 1; fi
+            printf '%s' "$data" | base64 -d | gunzip > "$f"
           done
 
       - name: Build the mod
