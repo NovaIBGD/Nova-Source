@@ -5,6 +5,10 @@
 # Windows, macOS, Android 32 / 64 and iOS on GitHub's (free, public-repo)
 # servers, combines them into one .geode and releases it once per version.
 # push.bat starts it after every push (gh workflow run).
+# A test build (test.bat: test_version = vX.Y.Z-beta.N): Nova only runs for
+# logged-in testers - no GitHub release and no artifacts left here (this repo
+# is public); the .geode goes to the Nova server (secret NOVA_OWNER_KEY), which
+# gives it to testers only.
 # (Kept in the source repo as ci/public-build.yml; in the public repo it is
 # .github/workflows/build.yml.)
 name: Build Geode Mod
@@ -15,6 +19,9 @@ on:
       ref:
         description: "Nova-Code (code) branch / commit to build"
         default: main
+      test_version:
+        description: "Test build version (vX.Y.Z-beta.N) - empty = a normal release"
+        default: ""
 
 jobs:
   build:
@@ -59,6 +66,17 @@ jobs:
           f="$RUNNER_TEMP/bindings-repo/bindings/2.2081/FMOD.bro"
           { echo '#import ios <fmod.hpp>'; cat "$f"; } > "$f.new" && mv "$f.new" "$f"
           echo "GEODE_BINDINGS_REPO_PATH=$RUNNER_TEMP/bindings-repo" >> "$GITHUB_ENV"
+
+      # A test build: its version, and NovaTest.hpp (Nova locks without a tester key)
+      - name: Test build
+        if: inputs.test_version != ''
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+        run: |
+          if ! [[ "$TEST_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then echo "::error::test_version must look like v2.5.5-beta.1"; exit 1; fi
+          printf '#pragma once\n#define NOVA_TEST 1\n' > src/NovaTest.hpp
+          python3 -c "import json,os; m=json.load(open('mod.json', encoding='utf-8')); m['version']=os.environ['TEST_VERSION']; json.dump(m, open('mod.json','w', encoding='utf-8'), indent='\t', ensure_ascii=False)"
 
       # src/OnlineURL.hpp is private: made from the NOVA_ONLINE_URL secret.
       - name: Online counter URL (private)
@@ -131,6 +149,7 @@ jobs:
     needs: ['build']
     permissions:
       contents: write   # the release
+      actions: write    # (a test build: its artifacts deleted)
 
     steps:
       - name: Source (private)
@@ -139,6 +158,17 @@ jobs:
           repository: bockatta/Nova-Code
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+
+      # A test build: its version, and NovaTest.hpp (Nova locks without a tester key)
+      - name: Test build
+        if: inputs.test_version != ''
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+        run: |
+          if ! [[ "$TEST_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then echo "::error::test_version must look like v2.5.5-beta.1"; exit 1; fi
+          printf '#pragma once\n#define NOVA_TEST 1\n' > src/NovaTest.hpp
+          python3 -c "import json,os; m=json.load(open('mod.json', encoding='utf-8')); m['version']=os.environ['TEST_VERSION']; json.dump(m, open('mod.json','w', encoding='utf-8'), indent='\t', ensure_ascii=False)"
 
       - uses: geode-sdk/build-geode-mod/combine@main
         id: build
@@ -154,13 +184,36 @@ jobs:
           done
 
       - uses: actions/upload-artifact@v4
+        if: inputs.test_version == ''
         with:
           name: Build Output
           path: ${{ steps.build.outputs.build-output }}
 
+      # A test build: to the Nova server (testers only), then this run's
+      # artifacts (each platform's piece) are deleted - this repo is public
+      - name: Upload test build
+        if: inputs.test_version != ''
+        shell: bash
+        env:
+          NOVA_ONLINE_URL: ${{ secrets.NOVA_ONLINE_URL }}
+          NOVA_OWNER_KEY: ${{ secrets.NOVA_OWNER_KEY }}
+          TEST_VERSION: ${{ inputs.test_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          p="${{ steps.build.outputs.build-output }}"
+          if [ -d "$p" ]; then f=$(ls "$p"/*.geode | head -n 1); else f="$p"; fi
+          code=$(curl -sS -o answer.txt -w "%{http_code}" -X POST "$NOVA_ONLINE_URL/test/upload?version=$TEST_VERSION" \
+            -H "X-Train-Key: $NOVA_OWNER_KEY" -H "content-type: application/octet-stream" --data-binary @"$f")
+          echo "The Nova server said $code: $(cat answer.txt)"
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[].id'); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" || true
+          done
+          [ "$code" = "200" ] || { echo "::error::The test build didn't upload ($code)"; exit 1; }
+
       # One release per version: the tag is mod.json's "version". Already
       # released -> skipped. No notes (the repo stays bare).
       - name: Release
+        if: inputs.test_version == ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
