@@ -88,6 +88,19 @@ jobs:
             printf '#pragma once\nconstexpr char const* ONLINE_URL = "%s";\n' "$NOVA_ONLINE_URL" > src/OnlineURL.hpp
           fi
 
+
+      # src/ModelKey.hpp: the brain-request signing key (secret MODEL_SIG_KEY). Empty / unset ->
+      # an empty key, so the mod just does not sign (the server still serves the brain until
+      # MODEL_REQUIRE_SIG is turned on). Gitignored in the source, like OnlineURL.hpp.
+      - name: Model signing key (private)
+        shell: bash
+        env:
+          MODEL_SIG_KEY: ${{ secrets.MODEL_SIG_KEY }}
+        run: |
+          if [ ! -f src/ModelKey.hpp ]; then
+            printf '#pragma once\nconstexpr char const* MODEL_SIG_KEY = "%s";\n' "$MODEL_SIG_KEY" > src/ModelKey.hpp
+          fi
+
       # src/NovaUI.hpp and src/NovaCourse.hpp: push.bat stores them, gzipped +
       # base64, in up to 4 secrets each (NOVA_UI_GZ_1..4, NOVA_COURSE_GZ_1..4;
       # "-" = an unused part) on every push - one secret holds 48 KB at most.
